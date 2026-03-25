@@ -1,26 +1,45 @@
-#!/bin/sh
+#!/bin/bash
 ########################################################################
 # Created By: ALEX DAVENPORT
 # Creation Date: October, 2020
-# Last modified: October 17th, 2020
-# Brief Description: Changes machine hostname to "first + last + computer make"
+# Last modified: March 25th, 2026
+# Brief Description: Changes machine hostname to "first + last + computer model"
+#                    using the last logged-in local user.
 ########################################################################
 
-# VARIABLES
-FullHardwareListing=$(/usr/libexec/PlistBuddy -c "print :'CPU Names':$(system_profiler SPHardwareDataType | awk '/Serial/ {print $4}' | cut -c 9-)-en-US_US" ~/Library/Preferences/com.apple.SystemProfiler.plist)
-LastUser=`defaults read /Library/Preferences/com.apple.loginwindow lastUserName`
-Full_Name=$(dscl . read /Users/$LastUser RealName | grep -v RealName | cut -c 2-)
-Plural_Full_Name="$Full_Name"\'s""
-ComputerName="${Plural_Full_Name} ${FullHardwareListing}"
-LocalHostName=$(echo $ComputerName | tr -dc '[:alnum:]\n\r' | sed 's/^\(.\{64\}\).*$/\1/')
-ShortName=$(echo $ComputerName | sed 's/^\(.\{64\}\).*$/\1/')
+# --- Get hardware model name ---
+ModelName=$(system_profiler SPHardwareDataType | awk -F': ' '/Model Name/ {print $2}')
+if [ -z "$ModelName" ]; then
+    echo "ERROR: Could not determine hardware model."
+    exit 1
+fi
 
-# Script Computer Name
-echo $ComputerName
+# --- Get last logged-in user ---
+LastUser=$(defaults read /Library/Preferences/com.apple.loginwindow lastUserName 2>/dev/null)
+if [ -z "$LastUser" ]; then
+    echo "ERROR: Could not determine last logged-in user."
+    exit 1
+fi
+
+# --- Get user's real name from directory services ---
+FullName=$(dscl . read "/Users/${LastUser}" RealName 2>/dev/null | grep -v RealName | sed 's/^ *//')
+if [ -z "$FullName" ]; then
+    echo "ERROR: Could not determine real name for user '${LastUser}'."
+    exit 1
+fi
+
+# --- Build computer name ---
+PluralFullName="${FullName}'s"
+ComputerName="${PluralFullName} ${ModelName}"
+LocalHostName=$(echo "$ComputerName" | tr -dc '[:alnum:]\n\r' | cut -c 1-64)
+ShortName=$(echo "$ComputerName" | cut -c 1-64)
+
+# --- Set computer name ---
+echo "Setting computer name to: ${ComputerName}"
 scutil --set HostName "$ShortName"
 scutil --set LocalHostName "$LocalHostName"
 scutil --set ComputerName "$ShortName"
-echo Rename Successful
+echo "Rename successful."
 
-#Update Inventory
+# --- Update inventory ---
 jamf recon
