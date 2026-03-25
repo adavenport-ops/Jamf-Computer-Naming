@@ -39,17 +39,27 @@ if [ -z "$Serial" ]; then
 fi
 
 # --- Obtain Bearer token via OAuth2 client credentials ---
+# Write credentials to a temporary file so they don't appear in process listings (ps).
+TokenRequestBody=$(mktemp)
+chmod 600 "$TokenRequestBody"
+printf 'grant_type=client_credentials&client_id=%s&client_secret=%s' \
+    "$ClientID" "$ClientSecret" > "$TokenRequestBody"
+
 TokenResponse=$(curl -s --fail-with-body \
     -X POST "${JssHost}/api/oauth/token" \
     -H "Content-Type: application/x-www-form-urlencoded" \
-    -d "grant_type=client_credentials&client_id=${ClientID}&client_secret=${ClientSecret}")
+    -d "@${TokenRequestBody}")
+curl_exit=$?
 
-if [ $? -ne 0 ]; then
+rm -f "$TokenRequestBody"
+
+if [ $curl_exit -ne 0 ]; then
     echo "ERROR: Failed to authenticate with Jamf Pro API."
     exit 1
 fi
 
 BearerToken=$(echo "$TokenResponse" | /usr/bin/python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null)
+unset TokenResponse
 
 if [ -z "$BearerToken" ]; then
     echo "ERROR: Could not extract access token from API response."
@@ -57,12 +67,20 @@ if [ -z "$BearerToken" ]; then
 fi
 
 # --- Look up assigned user via API ---
-Response=$(curl -s --fail-with-body \
-    -H "Authorization: Bearer ${BearerToken}" \
-    -H "Accept: application/xml" \
-    "${JssHost}/JSSResource/computers/serialnumber/${Serial}/subset/location")
+# Use a config file for the Authorization header to keep the token off the command line.
+CurlConfig=$(mktemp)
+chmod 600 "$CurlConfig"
+printf 'header = "Authorization: Bearer %s"\nheader = "Accept: application/xml"\n' \
+    "$BearerToken" > "$CurlConfig"
 
-if [ $? -ne 0 ]; then
+Response=$(curl -s --fail-with-body \
+    -K "$CurlConfig" \
+    "${JssHost}/JSSResource/computers/serialnumber/${Serial}/subset/location")
+curl_exit=$?
+
+rm -f "$CurlConfig"
+
+if [ $curl_exit -ne 0 ]; then
     echo "ERROR: Failed to look up computer in Jamf Pro."
     exit 1
 fi
@@ -87,9 +105,14 @@ scutil --set ComputerName "$ShortName"
 echo "Rename successful."
 
 # --- Invalidate the token ---
-curl -s -o /dev/null \
-    -X POST "${JssHost}/api/v1/auth/invalidate-token" \
-    -H "Authorization: Bearer ${BearerToken}"
+CurlConfig=$(mktemp)
+chmod 600 "$CurlConfig"
+printf 'header = "Authorization: Bearer %s"\n' "$BearerToken" > "$CurlConfig"
+curl -s -o /dev/null -X POST "${JssHost}/api/v1/auth/invalidate-token" -K "$CurlConfig"
+rm -f "$CurlConfig"
+
+# --- Clear sensitive variables ---
+unset ClientSecret BearerToken
 
 # --- Update inventory ---
 jamf recon
